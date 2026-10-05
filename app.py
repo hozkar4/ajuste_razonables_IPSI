@@ -1,7 +1,8 @@
 import os
+import time
+import io
 import streamlit as st
 from google import genai
-import io
 from docx import Document
 
 st.set_page_config(
@@ -9,6 +10,17 @@ st.set_page_config(
     page_icon="🧠",
     layout="wide",
 )
+
+# Cargar automáticamente la clave desde .env si existe
+def obtener_clave_maestra():
+    if os.path.exists(".env"):
+        with open(".env", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("GEMINI_API_KEY="):
+                    return line.split("=", 1)[1].strip()
+    return os.environ.get("GEMINI_API_KEY", "").strip()
+
+ENV_API_KEY = obtener_clave_maestra()
 
 # Escudo del IPSI
 if os.path.exists("logo_ipsi.jpg"):
@@ -19,10 +31,31 @@ st.sidebar.markdown("**Banco Dinámico de Ajustes Razonables (IA)**")
 st.sidebar.markdown("---")
 st.sidebar.caption("Powered by Hózkar")
 
-# Input para la API key en el panel lateral
-api_key = st.sidebar.text_input("🔑 Tu clave API de Gemini:", type="password", help="Pega aquí tu clave API. Puedes obtenerla en Google AI Studio.")
-st.sidebar.markdown("[Obtener clave API gratuita aquí](https://aistudio.google.com/app/apikey)")
-st.sidebar.markdown("---")
+# Configuración de Clave API: Si existe clave preconfigurada, usarla por defecto
+if ENV_API_KEY:
+    st.sidebar.success("✅ **Clave Institucional Activa:** Configuración de cero pasos para los docentes.")
+    api_key_input = st.sidebar.text_input(
+        "🔑 Clave API (Preconfigurada):", 
+        value=ENV_API_KEY,
+        type="password", 
+        help="Clave configurada para el colegio."
+    )
+else:
+    api_key_input = st.sidebar.text_input(
+        "🔑 Clave API de Gemini:", 
+        type="password", 
+        help="Pega aquí tu clave API personal de Google AI Studio."
+    )
+    st.sidebar.markdown("[👉 Obtener clave API gratuita en Google AI Studio](https://aistudio.google.com/app/apikey)")
+
+api_key = api_key_input.strip() if api_key_input else ENV_API_KEY
+
+# Selección de modelo
+modelo_seleccionado = st.sidebar.selectbox(
+    "⚙️ Modelo IA:",
+    ["Automático (Recomendado)", "gemini-flash-lite-latest", "gemini-pro-latest", "gemini-2.5-pro"],
+    help="El modo Automático reintenta y conmuta de modelo si hay saturación de la API."
+)
 
 @st.cache_data
 def cargar_opciones_base():
@@ -42,7 +75,7 @@ st.title("🧩 Banco Dinámico de Ajustes Razonables y Actividades Sugeridas - I
 st.write("Esta herramienta interactúa en tiempo real con inteligencia artificial para generar planes de apoyo psicopedagógico únicos y contextualizados.")
 
 if df_diag_raw is None or df_asig_raw is None:
-    st.error("⚠️ No se encontraron los archivos de Excel.")
+    st.error("⚠️ No se encontraron los archivos de Excel requeridos.")
 else:
     cursos = ["TR"] + [f"{i}°" for i in range(1, 12)]
     edades = list(range(4, 20))
@@ -64,7 +97,6 @@ else:
             genero_sel = st.selectbox("3. GÉNERO * (Obligatorio)", generos)
         with col2:
             asignatura_sel = st.selectbox("4. ASIGNATURA * (Obligatorio)", lista_asignaturas)
-            # Usar un contenedor con altura fija para no ocupar toda la pantalla
             st.markdown("**5. DIAGNÓSTICO(S) * (Obligatorio)**")
             st.caption("💡 *Pase el cursor sobre los nombres para visualizar su definición.*")
             
@@ -82,13 +114,13 @@ else:
         submitted = st.form_submit_button("✨ Generar Propuesta Inteligente con Gemini")
 
     if submitted:
-        if not api_key:
-            st.error("❌ ERROR: Para poder generar la propuesta, debes pegar tu **Clave API de Gemini** en el panel lateral izquierdo.")
+        key_limpia = api_key.strip() if api_key else ""
+        if not key_limpia:
+            st.error("❌ **ERROR:** Se requiere una clave API configurada para generar la propuesta.")
         elif not diagnosticos_sel:
             st.warning("⚠️ Por favor, seleccione al menos un diagnóstico (puede elegir 'Ninguno').")
         else:
-            with st.spinner("🤖 La IA está analizando el caso y estructurando los ajustes razonables para el I.PS.I..."):
-                prompt_sistema = f"""
+            prompt_sistema = f"""
 Eres un asesor experto en psicopedagogía e inclusión escolar del Instituto Psicopedagógico Integral (I.PS.I.) de Bogotá.
 Tu tarea es generar un plan de apoyo pedagógico detallado, claro y aterrizado al aula de clase para un estudiante con los siguientes parámetros:
 - Curso: {curso_sel}
@@ -106,47 +138,97 @@ Por favor, estructura tu respuesta en las siguientes secciones con lenguaje prof
 Al final de tu respuesta, cierra obligatoriamente con el siguiente crédito exacto:
 "BANCO DE AJUSTES RAZONABLES — I.PS.I. | Powered by Hózkar"
 """
+
+            # Definir modelos optimizados
+            if modelo_seleccionado == "Automático (Recomendado)":
+                modelos_a_probar = ["gemini-flash-lite-latest", "gemini-pro-latest", "gemini-2.5-pro"]
+            else:
+                modelos_a_probar = [modelo_seleccionado, "gemini-flash-lite-latest", "gemini-pro-latest"]
+
+            exito = False
+            texto_resultado = ""
+            modelo_usado = ""
+            errores_registrados = []
+
+            status_placeholder = st.empty()
+            
+            with st.spinner("🤖 La IA está analizando el caso y estructurando los ajustes razonables para el I.PS.I..."):
                 try:
-                    client = genai.Client(api_key=api_key)
-                    response = client.models.generate_content(
-                        model="gemini-3.8-flash",
-                        contents=prompt_sistema,
-                    )
-                    
-                    st.success("¡Plan generado exitosamente por la IA!")
-                    
-                    # Mostrar el resultado dentro de un contenedor visualmente atractivo
-                    st.info("💡 **A continuación se muestra el plan. Puedes copiar el texto directamente o descargarlo usando los botones de abajo.**")
-                    st.markdown(response.text)
-                    
-                    st.markdown("---")
-                    col_btn1, col_btn2 = st.columns(2)
-                    
-                    with col_btn1:
-                        st.download_button(
-                            label="📥 Descargar como Archivo de Texto (.txt)",
-                            data=response.text,
-                            file_name=f"Ajustes_{curso_sel}_{asignatura_sel}.txt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
+                    client = genai.Client(api_key=key_limpia)
+                except Exception as e_init:
+                    st.error(f"❌ Error de inicialización del cliente Gemini: {e_init}")
+                    client = None
 
-                    with col_btn2:
-                        doc = Document()
-                        doc.add_heading("Banco de Ajustes Razonables - I.PS.I.", 0)
-                        doc.add_paragraph(f"Curso: {curso_sel} | Edad: {edad_sel} | Asignatura: {asignatura_sel}")
-                        doc.add_paragraph(f"Diagnósticos: {', '.join(diagnosticos_sel)}")
-                        doc.add_paragraph(response.text)
+                if client:
+                    for mod in modelos_a_probar:
+                        if exito:
+                            break
                         
-                        bio = io.BytesIO()
-                        doc.save(bio)
-                        st.download_button(
-                            label="📄 Descargar como Documento de Word (.docx)",
-                            data=bio.getvalue(),
-                            file_name=f"Ajustes_{curso_sel}_{asignatura_sel}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            use_container_width=True
-                        )
+                        max_reintentos = 2
+                        for intento in range(1, max_reintentos + 1):
+                            try:
+                                status_placeholder.info(f"⏳ Consultando a la IA (`{mod}`)...")
+                                response = client.models.generate_content(
+                                    model=mod,
+                                    contents=prompt_sistema,
+                                )
+                                if response and response.text:
+                                    texto_resultado = response.text
+                                    modelo_usado = mod
+                                    exito = True
+                                    break
+                            except Exception as e:
+                                err_str = str(e)
+                                errores_registrados.append(f"[{mod} - Intento {intento}] {err_str}")
+                                
+                                is_quota_or_server_err = any(k in err_str.upper() for k in ["429", "RESOURCE_EXHAUSTED", "500", "503", "QUOTA", "OVERLOADED"])
+                                
+                                if is_quota_or_server_err and intento < max_reintentos:
+                                    espera = intento * 3
+                                    status_placeholder.warning(f"⚠️ Servidor ocupado. Reintentando en {espera}s...")
+                                    time.sleep(espera)
+                                else:
+                                    break
 
-                except Exception as e:
-                    st.error(f"Ocurrió un error al conectar con el servicio de Gemini: {e}")
+            status_placeholder.empty()
+
+            if exito:
+                st.success(f"¡Plan generado exitosamente por la IA!")
+                
+                # Mostrar el resultado
+                st.info("💡 **A continuación se muestra el plan. Puedes copiar el texto directamente o descargarlo usando los botones de abajo.**")
+                st.markdown(texto_resultado)
+                
+                st.markdown("---")
+                col_btn1, col_btn2 = st.columns(2)
+                
+                with col_btn1:
+                    st.download_button(
+                        label="📥 Descargar como Archivo de Texto (.txt)",
+                        data=texto_resultado,
+                        file_name=f"Ajustes_{curso_sel}_{asignatura_sel}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+
+                with col_btn2:
+                    doc = Document()
+                    doc.add_heading("Banco de Ajustes Razonables - I.PS.I.", 0)
+                    doc.add_paragraph(f"Curso: {curso_sel} | Edad: {edad_sel} | Asignatura: {asignatura_sel}")
+                    doc.add_paragraph(f"Diagnósticos: {', '.join(diagnosticos_sel)}")
+                    doc.add_paragraph(texto_resultado)
+                    
+                    bio = io.BytesIO()
+                    doc.save(bio)
+                    st.download_button(
+                        label="📄 Descargar como Documento de Word (.docx)",
+                        data=bio.getvalue(),
+                        file_name=f"Ajustes_{curso_sel}_{asignatura_sel}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True
+                    )
+            else:
+                st.error("❌ **No se pudo completar la solicitud con el servicio de IA.**")
+                with st.expander("🛠️ Ver detalles del error técnico"):
+                    for err in errores_registrados:
+                        st.code(err)
